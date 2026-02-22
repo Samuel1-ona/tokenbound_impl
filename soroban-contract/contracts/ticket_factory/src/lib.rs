@@ -14,9 +14,11 @@
 
 #![no_std]
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, Address, BytesN, Env, IntoVal, Val, Vec,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Env, IntoVal, Val, Vec};
+
+const DAY_IN_LEDGERS: u32 = 17280;
+const BUMP_AMOUNT: u32 = 518400;
+const LIFETIME_THRESHOLD: u32 = DAY_IN_LEDGERS;
 
 /// Storage keys for the contract state
 #[contracttype]
@@ -51,6 +53,11 @@ impl TicketFactory {
             .instance()
             .set(&DataKey::TicketWasmHash, &ticket_wasm_hash);
         env.storage().instance().set(&DataKey::TotalTickets, &0u32);
+
+        // Extend instance TTL
+        env.storage()
+            .instance()
+            .extend_ttl(LIFETIME_THRESHOLD, BUMP_AMOUNT);
     }
 
     /// Deploy a new Ticket NFT contract for an event
@@ -101,10 +108,22 @@ impl TicketFactory {
             .persistent()
             .set(&DataKey::TicketContract(ticket_id), &deployed_address);
 
+        // Extend persistent TTL
+        env.storage().persistent().extend_ttl(
+            &DataKey::TicketContract(ticket_id),
+            LIFETIME_THRESHOLD,
+            BUMP_AMOUNT,
+        );
+
         // Update total count in instance storage
         env.storage()
             .instance()
             .set(&DataKey::TotalTickets, &ticket_id);
+
+        // Extend instance TTL
+        env.storage()
+            .instance()
+            .extend_ttl(LIFETIME_THRESHOLD, BUMP_AMOUNT);
 
         deployed_address
     }
@@ -118,9 +137,16 @@ impl TicketFactory {
     /// # Returns
     /// The address of the ticket contract, or None if not found
     pub fn get_ticket_contract(env: Env, event_id: u32) -> Option<Address> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::TicketContract(event_id))
+        let key = DataKey::TicketContract(event_id);
+        let addr = env.storage().persistent().get::<DataKey, Address>(&key);
+
+        if addr.is_some() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, LIFETIME_THRESHOLD, BUMP_AMOUNT);
+        }
+
+        addr
     }
 
     /// Get the total number of ticket contracts deployed

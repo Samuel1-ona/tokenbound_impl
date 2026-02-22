@@ -4,6 +4,10 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, Address, Env, IntoVal, String, Symbol, Vec,
 };
 
+const DAY_IN_LEDGERS: u32 = 17280;
+const BUMP_AMOUNT: u32 = 518400;
+const LIFETIME_THRESHOLD: u32 = DAY_IN_LEDGERS;
+
 // Storage keys
 #[contracttype]
 pub enum DataKey {
@@ -48,6 +52,11 @@ impl EventManager {
 
         // Initialize event counter
         env.storage().instance().set(&DataKey::EventCounter, &0u32);
+
+        // Extend instance TTL
+        env.storage()
+            .instance()
+            .extend_ttl(LIFETIME_THRESHOLD, BUMP_AMOUNT);
     }
 
     /// Create a new event
@@ -93,6 +102,18 @@ impl EventManager {
             .persistent()
             .set(&DataKey::Event(event_id), &event);
 
+        // Extend persistent TTL for the new event
+        env.storage().persistent().extend_ttl(
+            &DataKey::Event(event_id),
+            LIFETIME_THRESHOLD,
+            BUMP_AMOUNT,
+        );
+
+        // Extend instance TTL
+        env.storage()
+            .instance()
+            .extend_ttl(LIFETIME_THRESHOLD, BUMP_AMOUNT);
+
         // Emit event creation event
         env.events().publish(
             (Symbol::new(&env, "event_created"),),
@@ -104,10 +125,18 @@ impl EventManager {
 
     /// Get event by ID
     pub fn get_event(env: Env, event_id: u32) -> Event {
+        let key = DataKey::Event(event_id);
+        let event: Event = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| panic!("Event not found"));
+
         env.storage()
             .persistent()
-            .get(&DataKey::Event(event_id))
-            .unwrap_or_else(|| panic!("Event not found"))
+            .extend_ttl(&key, LIFETIME_THRESHOLD, BUMP_AMOUNT);
+
+        event
     }
 
     /// Get total number of events
@@ -124,7 +153,11 @@ impl EventManager {
         let mut events = Vec::new(&env);
 
         for i in 0..count {
-            if let Some(event) = env.storage().persistent().get(&DataKey::Event(i)) {
+            let key = DataKey::Event(i);
+            if let Some(event) = env.storage().persistent().get::<DataKey, Event>(&key) {
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&key, LIFETIME_THRESHOLD, BUMP_AMOUNT);
                 events.push_back(event);
             }
         }
@@ -152,9 +185,18 @@ impl EventManager {
         event.is_canceled = true;
 
         // Update storage
+        let key = DataKey::Event(event_id);
+        env.storage().persistent().set(&key, &event);
+
+        // Extend persistent TTL
         env.storage()
             .persistent()
-            .set(&DataKey::Event(event_id), &event);
+            .extend_ttl(&key, LIFETIME_THRESHOLD, BUMP_AMOUNT);
+
+        // Extend instance TTL
+        env.storage()
+            .instance()
+            .extend_ttl(LIFETIME_THRESHOLD, BUMP_AMOUNT);
 
         // Emit cancellation event
         env.events()
