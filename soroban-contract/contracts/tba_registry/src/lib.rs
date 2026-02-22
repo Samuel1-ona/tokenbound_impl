@@ -4,6 +4,10 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, Address, BytesN, Env, IntoVal, Symbol, Val, Vec,
 };
 
+const DAY_IN_LEDGERS: u32 = 17280; // ~1 day
+const BUMP_AMOUNT: u32 = 518400; // ~30 days
+const LIFETIME_THRESHOLD: u32 = DAY_IN_LEDGERS;
+
 /// Storage keys for the registry contract
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -35,6 +39,11 @@ impl TbaRegistry {
         env.storage()
             .instance()
             .set(&DataKey::ImplementationWasmHash, &tba_account_wasm_hash);
+
+        // Extend instance TTL
+        env.storage()
+            .instance()
+            .extend_ttl(LIFETIME_THRESHOLD, BUMP_AMOUNT);
     }
 
     /// Calculate the deterministic address for a TBA account
@@ -68,7 +77,14 @@ impl TbaRegistry {
             salt.clone(),
         );
 
-        if let Some(deployed_addr) = env.storage().persistent().get(&account_key) {
+        if let Some(deployed_addr) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&account_key)
+        {
+            env.storage()
+                .persistent()
+                .extend_ttl(&account_key, LIFETIME_THRESHOLD, BUMP_AMOUNT);
             return deployed_addr;
         }
 
@@ -161,11 +177,23 @@ impl TbaRegistry {
             .persistent()
             .set(&account_key, &deployed_address);
 
+        env.storage()
+            .persistent()
+            .extend_ttl(&account_key, LIFETIME_THRESHOLD, BUMP_AMOUNT);
+
         // Increment and store the account count for this NFT
         let count_key = DataKey::AccountCount(token_contract.clone(), token_id);
         let current_count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
         let new_count = current_count + 1;
         env.storage().persistent().set(&count_key, &new_count);
+        env.storage()
+            .persistent()
+            .extend_ttl(&count_key, LIFETIME_THRESHOLD, BUMP_AMOUNT);
+
+        // Extend instance TTL
+        env.storage()
+            .instance()
+            .extend_ttl(LIFETIME_THRESHOLD, BUMP_AMOUNT);
 
         deployed_address
     }
@@ -181,7 +209,19 @@ impl TbaRegistry {
     /// The number of TBA accounts that have been deployed for this NFT
     pub fn total_deployed_accounts(env: Env, token_contract: Address, token_id: u128) -> u32 {
         let count_key = DataKey::AccountCount(token_contract, token_id);
-        env.storage().persistent().get(&count_key).unwrap_or(0)
+        let count = env
+            .storage()
+            .persistent()
+            .get::<DataKey, u32>(&count_key)
+            .unwrap_or(0);
+
+        if count > 0 {
+            env.storage()
+                .persistent()
+                .extend_ttl(&count_key, LIFETIME_THRESHOLD, BUMP_AMOUNT);
+        }
+
+        count
     }
 
     /// Get the deployed address for specific parameters (if it exists)
@@ -204,7 +244,18 @@ impl TbaRegistry {
     ) -> Option<Address> {
         let account_key =
             DataKey::DeployedAccount(implementation_hash, token_contract, token_id, salt);
-        env.storage().persistent().get(&account_key)
+        let addr = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&account_key);
+
+        if addr.is_some() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&account_key, LIFETIME_THRESHOLD, BUMP_AMOUNT);
+        }
+
+        addr
     }
 }
 
